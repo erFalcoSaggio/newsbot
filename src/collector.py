@@ -1,5 +1,5 @@
 """
-Raccolta articoli da feed RSS con filtraggio per rilevanza e freschezza.
+Raccolta articoli con sistema di scoring per rilevanza — v2.
 """
 
 import feedparser
@@ -8,7 +8,10 @@ from time import mktime
 import re
 import logging
 
-from config import RSS_FEEDS, RELEVANCE_KEYWORDS, MAX_ARTICLES, MAX_AGE_HOURS
+from config import (
+    RSS_FEEDS, HIGH_SIGNAL_KEYWORDS, LOW_SIGNAL_KEYWORDS,
+    NOISE_KEYWORDS, MAX_ARTICLES, MAX_AGE_HOURS
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,19 +34,46 @@ def is_recent(pub_date, max_hours):
     return pub_date >= cutoff
 
 
-def is_relevant(title, summary, keywords):
-    if not keywords:
-        return True
-    text = f"{title} {summary}".lower()
-    return any(kw.lower() in text for kw in keywords)
-
-
 def clean_html(text):
     if not text:
         return ""
     clean = re.sub(r"<[^>]+>", "", text)
     clean = re.sub(r"\s+", " ", clean).strip()
     return clean[:500]
+
+
+def compute_relevance_score(title, summary):
+    """
+    Calcola un punteggio di rilevanza per l'articolo.
+    >= 3: molto rilevante (keyword ad alto segnale)
+    1-2: probabilmente rilevante (keyword a basso segnale)
+    0: non rilevante
+    -10: rumore (da escludere)
+    """
+    text = f"{title} {summary}".lower()
+
+    # Prima controlla se è rumore
+    for noise in NOISE_KEYWORDS:
+        if noise.lower() in text:
+            return -10
+
+    score = 0
+
+    # Keyword ad alto segnale: +3 ciascuna (max contate una volta)
+    for kw in HIGH_SIGNAL_KEYWORDS:
+        if kw.lower() in text:
+            score += 3
+
+    # Keyword a basso segnale: +1 ciascuna
+    for kw in LOW_SIGNAL_KEYWORDS:
+        if kw.lower() in text:
+            score += 1
+
+    # Bonus per titoli corti e incisivi (tipici di breaking news)
+    if len(title.split()) <= 12:
+        score += 1
+
+    return score
 
 
 def fetch_feed(feed_info):
@@ -65,7 +95,11 @@ def fetch_feed(feed_info):
 
             if not title:
                 continue
-            if not is_relevant(title, summary, RELEVANCE_KEYWORDS):
+
+            score = compute_relevance_score(title, summary)
+
+            # Scarta rumore e articoli non rilevanti
+            if score < 1:
                 continue
 
             articles.append({
@@ -75,6 +109,7 @@ def fetch_feed(feed_info):
                 "source": feed_info["name"],
                 "category": feed_info["category"],
                 "published": pub_date.isoformat() if pub_date else None,
+                "score": score,
             })
     except Exception as e:
         logger.error(f"Errore nel fetch di {feed_info['name']}: {e}")
@@ -87,17 +122,24 @@ def collect_all():
         logger.info(f"Fetching: {feed_info['name']}...")
         articles = fetch_feed(feed_info)
         all_articles.extend(articles)
-        logger.info(f"  → {len(articles)} articoli trovati")
+        logger.info(f"  → {len(articles)} articoli rilevanti")
 
-    seen_titles = set()
+    # Deduplica per titolo normalizzato
+    seen = set()
     unique = []
     for art in all_articles:
-        normalized = art["title"].lower().strip()
-        if normalized not in seen_titles:
-            seen_titles.add(normalized)
+        key = art["title"].lower().strip()
+        if key not in seen:
+            seen.add(key)
             unique.append(art)
 
-    unique.sort(key=lambda x: x["published"] or "0000", reverse=True)
+    # Ordina per score (più rilevanti prima), poi per data
+    unique.sort(key=lambda x: (x["score"], x["published"] or "0000"), reverse=True)
+
     result = unique[:MAX_ARTICLES]
-    logger.info(f"Totale: {len(all_articles)}, unici: {len(unique)}, selezionati: {len(result)}")
+    logger.info(
+        f"Totale: {len(all_articles)}, unici: {len(unique)}, "
+        f"selezionati: {len(result)}, "
+        f"score range: {result[-1]['score'] if result else 0}-{result[0]['score'] if result else 0}"
+    )
     return result

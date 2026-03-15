@@ -1,5 +1,5 @@
 """
-Sintesi degli articoli tramite Gemini API (free tier).
+Sintesi degli articoli tramite Gemini API — v2.
 """
 
 import os
@@ -10,36 +10,53 @@ logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash-lite"
-GEMINI_URL = (
-    f"https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-)
 
-SYSTEM_PROMPT = """Sei un giornalista tech italiano esperto di AI, startup e tecnologia.
 
-Ti verrà fornita una lista di articoli con titolo, fonte e breve descrizione.
-Il tuo compito è creare un DIGEST GIORNALIERO in italiano, seguendo queste regole:
+def _gemini_url():
+    return (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    )
 
-1. Raggruppa le notizie per tema (AI, Startup/Funding, Tech)
-2. Per ogni notizia scrivi 1-2 frasi di riassunto chiare e informative
-3. Usa un tono professionale ma accessibile
-4. Evidenzia perché la notizia è rilevante
-5. Se ci sono connessioni tra notizie diverse, segnalale
 
-FORMATO OUTPUT:
+SYSTEM_PROMPT = """Sei un editor di una newsletter tech italiana di alta qualità.
+
+COMPITO: Trasforma questa lista di articoli in un digest conciso e leggibile.
+
+REGOLE RIGIDE:
+- Scrivi SOLO in italiano
+- Ogni notizia va riassunta in MASSIMO 2 frasi
+- Sii specifico: includi numeri, nomi, cifre quando disponibili
+- NON usare frasi generiche tipo "grande impatto sul settore" o "interessante sviluppo"
+- Se una notizia non è davvero importante, OMETTILA — meglio 5 notizie buone che 12 mediocri
+- Collega notizie correlate con una breve nota (es. "collegato al punto precedente...")
+
+FORMATO (usa esattamente questa struttura):
 
 🤖 *AI & Machine Learning*
-- [riassunto notizia] — _fonte_
+
+• Riassunto notizia conciso e specifico — _Fonte_
+  [Link](url)
 
 🚀 *Startup & Funding*
-- [riassunto notizia] — _fonte_
+
+• Riassunto notizia — _Fonte_
+  [Link](url)
 
 💻 *Tech*
-- [riassunto notizia] — _fonte_
 
-Se una categoria non ha notizie, omettila.
-Alla fine aggiungi una riga con il conteggio totale delle notizie.
-Usa il formato Markdown compatibile con Telegram."""
+• Riassunto notizia — _Fonte_
+  [Link](url)
+
+---
+📊 _X notizie selezionate | Digest generato automaticamente_
+
+REGOLE FORMATO:
+- Ometti categorie vuote
+- Una riga vuota tra ogni notizia
+- Il link va su una riga separata sotto il riassunto
+- Usa *grassetto* per i nomi importanti (aziende, prodotti, persone)
+- Usa _corsivo_ solo per le fonti"""
 
 
 def build_articles_text(articles):
@@ -49,7 +66,8 @@ def build_articles_text(articles):
             f"{i}. [{art['category']}] {art['title']}\n"
             f"   Fonte: {art['source']}\n"
             f"   Descrizione: {art['summary'][:300]}\n"
-            f"   Link: {art['link']}"
+            f"   Link: {art['link']}\n"
+            f"   Punteggio rilevanza: {art.get('score', 0)}"
         )
     return "\n\n".join(lines)
 
@@ -63,15 +81,23 @@ def summarize(articles):
         return fallback_digest(articles)
 
     articles_text = build_articles_text(articles)
-    prompt = f"{SYSTEM_PROMPT}\n\n--- ARTICOLI DI OGGI ---\n\n{articles_text}"
+    prompt = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"--- ARTICOLI (ordinati per rilevanza, i primi sono i più importanti) ---\n\n"
+        f"{articles_text}"
+    )
 
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2048},
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 2048,
+        },
     }
 
     try:
-        resp = requests.post(GEMINI_URL, json=payload, timeout=30)
+        url = _gemini_url()
+        resp = requests.post(url, json=payload, timeout=60)
         resp.raise_for_status()
         data = resp.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -87,7 +113,7 @@ def summarize(articles):
 
 def fallback_digest(articles):
     logger.warning("Usando fallback digest (senza LLM)")
-    lines = ["📰 *Daily Tech Digest* (modalità fallback)\n"]
+    lines = []
     by_cat = {}
     for art in articles:
         by_cat.setdefault(art["category"], []).append(art)
@@ -95,11 +121,11 @@ def fallback_digest(articles):
     emoji_map = {"AI": "🤖", "Tech": "💻", "Startup": "🚀"}
     for cat, arts in by_cat.items():
         emoji = emoji_map.get(cat, "📌")
-        lines.append(f"\n{emoji} *{cat}*")
-        for art in arts:
+        lines.append(f"{emoji} *{cat}*\n")
+        for art in arts[:5]:  # Max 5 per categoria nel fallback
             lines.append(f"• {art['title']} — _{art['source']}_")
             if art["link"]:
-                lines.append(f"  🔗 {art['link']}")
+                lines.append(f"  {art['link']}\n")
 
-    lines.append(f"\n📊 Totale: {len(articles)} notizie")
+    lines.append(f"---\n📊 _{len(articles)} notizie | Modalità fallback (senza AI)_")
     return "\n".join(lines)
