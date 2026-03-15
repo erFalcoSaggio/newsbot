@@ -29,13 +29,13 @@ Il tuo compito è creare un DIGEST GIORNALIERO in italiano, seguendo queste rego
 FORMATO OUTPUT:
 
 🤖 *AI & Machine Learning*
-• [riassunto notizia] — _fonte_
+- [riassunto notizia] — _fonte_
 
 🚀 *Startup & Funding*
-• [riassunto notizia] — _fonte_
+- [riassunto notizia] — _fonte_
 
 💻 *Tech*
-• [riassunto notizia] — _fonte_
+- [riassunto notizia] — _fonte_
 
 Se una categoria non ha notizie, omettila.
 Alla fine aggiungi una riga con il conteggio totale delle notizie.
